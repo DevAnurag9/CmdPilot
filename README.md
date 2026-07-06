@@ -27,9 +27,14 @@ by the user.
 
 ## Screenshots
 
-Add product screenshots in `screenshots/` after running the app locally.
+### Home
+![Home](screenshots/home.png)
 
-![CmdPilot hero](frontend/src/assets/cmdpilot-hero.png)
+### Safe command generation
+![Safe](screenshots/playground-safe.png)
+
+### Dangerous command detection
+![Dangerous](screenshots/playground-dangerous.png)
 
 ## Demo
 
