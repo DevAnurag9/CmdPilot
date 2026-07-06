@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      CMDPILOT_DATABASE_URL: /data/cmdpilot.db
+      CMDPILOT_ALLOWED_ORIGINS: '["http://localhost:5173"]'
+    volumes:
+      - cmdpilot-data:/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  cmdpilot-data:
