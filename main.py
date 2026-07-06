@@ -1,22 +1,15 @@
 import subprocess
 
-commands = {
-    "list all files": "dir",
-    "show current directory": "cd"
-}
+from ai import get_command
 
-query = input("Ask: ").lower()
 
-if query in commands:
+query = input("Ask: ")
 
-    command = commands[query]
+command = get_command(query)
 
-    print(f"\nSuggested Command: {command}")
+print(f"\nSuggested Command:\n{command}")
 
-    choice = input("Execute? (y/n): ")
+choice = input("\nExecute? (y/n): ")
 
-    if choice.lower() == "y":
-        subprocess.run(command, shell=True)
-
-else:
-    print("Command not found")
+if choice.lower() == "y":
+    subprocess.run(command, shell=True)
