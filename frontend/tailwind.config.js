@@ -6,8 +6,8 @@ export default {
     extend: {
       colors: {
         border: "rgba(148, 163, 184, 0.2)",
-        background: "#05070d",
-        foreground: "#f8fafc",
+        background: "var(--cmdpilot-bg)",
+        foreground: "var(--cmdpilot-fg)",
       },
       boxShadow: {
         glow: "0 0 80px rgba(34, 211, 238, 0.18)",
