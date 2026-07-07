@@ -1,15 +1,24 @@
 import json
 import re
-from ollama import ResponseError, chat
+
+from groq import Groq
 
 from app.models.schemas import CommandSuggestion, Platform
 from app.services.explainer import explain_command
 from app.utils.config import settings
 
 
+client = Groq(api_key=settings.groq_api_key)
+
+
 FALLBACKS: dict[Platform, dict[str, list[str]]] = {
     "windows": {
         "list": ["dir", "dir /a", "tree"],
+        "search": [
+            "where filename",
+            "dir /s filename",
+            "Get-ChildItem -Recurse",
+        ],
         "current": ["cd"],
         "ip": ["ipconfig"],
         "large": [
@@ -18,6 +27,11 @@ FALLBACKS: dict[Platform, dict[str, list[str]]] = {
     },
     "linux": {
         "list": ["ls", "ls -la", "find . -maxdepth 1 -type f"],
+        "search": [
+            "find . -name filename",
+            "locate filename",
+            "find / -name filename 2>/dev/null",
+        ],
         "current": ["pwd"],
         "ip": ["ip addr", "hostname -I"],
         "large": [
@@ -27,6 +41,11 @@ FALLBACKS: dict[Platform, dict[str, list[str]]] = {
     },
     "macos": {
         "list": ["ls", "ls -la", "find . -maxdepth 1 -type f"],
+        "search": [
+            "find . -name filename",
+            "mdfind filename",
+            "find / -name filename 2>/dev/null",
+        ],
         "current": ["pwd"],
         "ip": ["ifconfig", "ipconfig getifaddr en0"],
         "large": [
@@ -74,16 +93,28 @@ def _blocked_destructive_request() -> list[CommandSuggestion]:
 def _intent(prompt: str) -> str:
     lowered = prompt.lower()
 
-    if any(word in lowered for word in ["ip", "network", "address"]):
+    if any(
+        x in lowered
+        for x in ["search", "find", "locate", "where is"]
+    ):
+        return "search"
+
+    if any(
+        x in lowered
+        for x in ["ip", "network", "address"]
+    ):
         return "ip"
 
     if any(
-        word in lowered
-        for word in ["current directory", "where am i", "pwd"]
+        x in lowered
+        for x in ["current directory", "where am i", "pwd"]
     ):
         return "current"
 
-    if any(word in lowered for word in ["large", "big file", "disk"]):
+    if any(
+        x in lowered
+        for x in ["large", "big file", "disk"]
+    ):
         return "large"
 
     return "list"
@@ -106,10 +137,12 @@ def _fallback_commands(
 
 
 def _clean_json(content: str) -> dict:
-    if "</think>" in content:
-        content = content.split("</think>", 1)[1]
+    content = content.strip()
 
-    content = content.strip().strip("`")
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1]
+        content = content.rsplit("```", 1)[0]
+
     return json.loads(content)
 
 
@@ -161,33 +194,24 @@ Target platform: {platform}
 
 Rules:
 1. Return ONLY commands for the selected platform.
-2. If platform is windows, return ONLY Windows CMD or PowerShell commands.
-3. If platform is linux, return ONLY Linux commands.
-4. If platform is macos, return ONLY macOS commands.
-5. Never generate destructive commands.
-6. Never generate:
-   rm -rf
-   del /f
-   format
-   shutdown
-   reboot
-7. Commands require user confirmation before execution.
+2. Never generate destructive commands.
+3. Return ONLY valid JSON.
 
-Return JSON only:
+Example:
 
 {{
   "suggestions": [
     {{
-      "command": "...",
-      "explanation": "..."
+      "command": "dir",
+      "explanation": "Lists files."
     }}
   ]
 }}
 """
 
     try:
-        response = chat(
-            model=settings.ollama_model,
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
             messages=[
                 {
                     "role": "system",
@@ -198,21 +222,15 @@ Return JSON only:
                     "content": prompt,
                 },
             ],
-            think=False,
-            format="json",
-            options={
-                "temperature": 0.1,
-                "num_predict": 220,
-            },
+            temperature=0.1,
         )
 
-        payload = _clean_json(
-            response["message"]["content"]
-        )
+        content = response.choices[0].message.content
+        payload = _clean_json(content)
 
         suggestions = payload.get(
             "suggestions",
-            [],
+            []
         )[:limit]
 
         parsed = [
@@ -225,7 +243,6 @@ Return JSON only:
             if item.get("command")
         ]
 
-        # AI returned commands for wrong OS
         if any(
             _wrong_platform(
                 suggestion.command,
@@ -239,19 +256,18 @@ Return JSON only:
                 limit,
             )
 
-        return parsed or _fallback_commands(
+        if parsed:
+            return parsed
+
+        return _fallback_commands(
             prompt,
             platform,
             limit,
         )
 
-    except (
-        ResponseError,
-        ConnectionError,
-        json.JSONDecodeError,
-        KeyError,
-        TypeError,
-    ):
+    except Exception as e:
+        print("Groq Error:", e)
+
         return _fallback_commands(
             prompt,
             platform,

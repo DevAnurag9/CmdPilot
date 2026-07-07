@@ -5,6 +5,8 @@ venv/
 node_modules/
 dist/
 .env
+*.env
+backend/.env
 *.db
 .pytest_cache/
 .ruff_cache/

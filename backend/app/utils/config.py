@@ -4,15 +4,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    ollama_model: str = "qwen3:4b"
-    database_url: str = "backend/cmdpilot.db"
-    allowed_origins: list[str] = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://cmd-pilot.vercel.app",
-]
+    # Groq
+    groq_api_key: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="CMDPILOT_")
+    # Database
+    database_url: str = "./cmdpilot.db"
+
+    # CORS
+    allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://cmd-pilot.vercel.app",
+    ]
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="CMDPILOT_",
+    )
 
 
 @lru_cache
