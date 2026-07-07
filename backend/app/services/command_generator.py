@@ -1,4 +1,5 @@
 import json
+import re
 from ollama import ResponseError, chat
 
 from app.models.schemas import CommandSuggestion, Platform
@@ -34,6 +35,40 @@ FALLBACKS: dict[Platform, dict[str, list[str]]] = {
         ],
     },
 }
+
+
+DESTRUCTIVE_INTENT_PATTERNS = (
+    r"\b(delete|remove|erase|wipe|destroy)\b.*\b(all|everything|files?|folders?|directories|drive|disk|system)\b",
+    r"\b(clear|clean)\b.*\b(drive|disk|system)\b",
+    r"\bformat\b.*\b(drive|disk|system|[a-z]:)\b",
+    r"\brm\s+-rf\b",
+    r"\bdel\s+(/f|/s|/q|\*)",
+)
+
+
+def _has_destructive_intent(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(
+        re.search(pattern, lowered)
+        for pattern in DESTRUCTIVE_INTENT_PATTERNS
+    )
+
+
+def _blocked_destructive_request() -> list[CommandSuggestion]:
+    return [
+        CommandSuggestion(
+            command="No safe command generated",
+            explanation=(
+                "CmdPilot blocked this request because it asks for broad "
+                "file deletion or another destructive operation."
+            ),
+            safe=False,
+            blocked=True,
+            warnings=[
+                "Destructive requests that delete broad sets of files are blocked."
+            ],
+        )
+    ]
 
 
 def _intent(prompt: str) -> str:
@@ -116,6 +151,9 @@ def generate_commands(
     platform: Platform,
     limit: int = 3,
 ) -> list[CommandSuggestion]:
+    if _has_destructive_intent(prompt):
+        return _blocked_destructive_request()
+
     system_prompt = f"""
 You are CmdPilot, an AI terminal assistant.
 

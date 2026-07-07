@@ -26,9 +26,12 @@ def generate_command(payload: CommandGenerationRequest) -> CommandGenerationResp
         safe_suggestions.append(
             suggestion.model_copy(
                 update={
-                    "safe": safety.safe,
-                    "warnings": safety.warnings,
-                    "blocked": safety.blocked,
+                    "safe": suggestion.safe and safety.safe,
+                    "warnings": [
+                        *suggestion.warnings,
+                        *safety.warnings,
+                    ],
+                    "blocked": suggestion.blocked or safety.blocked,
                 }
             )
         )
