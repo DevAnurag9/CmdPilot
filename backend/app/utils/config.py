@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # Groq
     groq_api_key: str = ""
+    groq_model: str = "llama-3.1-8b-instant"
 
     # Database
     database_url: str = "./cmdpilot.db"

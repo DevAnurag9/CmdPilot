@@ -8,7 +8,6 @@ from app.database.connection import init_db
 from app.utils.config import settings
 
 
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -37,3 +36,12 @@ def health() -> dict[str, str]:
 
 
 app.include_router(router)
+
+
+@app.get("/")
+def root() -> dict[str, str]:
+    return {
+        "message": "CmdPilot API is running",
+        "docs": "/docs",
+        "health": "/health",
+    }

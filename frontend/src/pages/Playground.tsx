@@ -1,32 +1,91 @@
-import { useState } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Loader2,
-  ShieldAlert,
-  Copy,
-  Check,
-} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Menu, Wand2 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 import { generateCommand, type Platform, type Suggestion } from "../lib/api";
+import { createHistoryItem, HISTORY_KEY } from "../lib/storage";
+import type { HistoryItem } from "../lib/types";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
+import { CommandCard } from "../components/CommandCard";
+import { EmptySuggestions } from "../components/EmptySuggestions";
+import { ExamplePrompts } from "../components/ExamplePrompts";
+import { HistorySidebar } from "../components/HistorySidebar";
+import { SuggestionSkeletons, ThinkingState } from "../components/LoadingState";
+import { TerminalPreview } from "../components/TerminalPreview";
+import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useSettings } from "../hooks/useSettings";
+
+const platforms: Platform[] = ["windows", "linux", "macos"];
 
 export default function Playground() {
-  const [prompt, setPrompt] = useState("show all files");
-  const [platform, setPlatform] = useState<Platform>("windows");
+  const { settings } = useSettings();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [prompt, setPrompt] = useState(searchParams.get("q") ?? "show all files");
+  const [platform, setPlatform] = useState<Platform>(
+    (searchParams.get("platform") as Platform | null) ?? settings.preferredPlatform,
+  );
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  const [history, setHistory] = useLocalStorage<HistoryItem[]>(HISTORY_KEY, []);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [previewCommand, setPreviewCommand] = useState("");
+  const firstResultRef = useRef<HTMLDivElement | null>(null);
 
-  async function submit() {
+  const currentHistory = history.find(
+    (item) => item.prompt === prompt && item.platform === platform,
+  );
+
+  const filteredHistory = useMemo(() => {
+    const query = historyQuery.trim().toLowerCase();
+    if (!query) return history;
+    return history.filter((item) =>
+      [item.prompt, item.platform, item.category].some((value) =>
+        value.toLowerCase().includes(query),
+      ),
+    );
+  }, [history, historyQuery]);
+
+  async function copyCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(command);
+      window.setTimeout(() => setCopied(""), 1500);
+    } catch {
+      setError("Failed to copy command.");
+    }
+  }
+
+  async function submit(options: { focusResult?: boolean } = {}) {
+    if (prompt.trim().length < 2 || loading) return;
+
     setLoading(true);
     setError("");
+    setSearchParams({ q: prompt, platform });
 
     try {
       const data = await generateCommand(prompt, platform);
       setSuggestions(data.suggestions);
+
+      const blockedCount = data.suggestions.filter((item) => item.blocked).length;
+      if (settings.saveHistory) {
+        setHistory((items) => [
+          createHistoryItem(prompt, platform, data.suggestions.length, blockedCount),
+          ...items.filter((item) => !(item.prompt === prompt && item.platform === platform)),
+        ].slice(0, 50));
+      }
+
+      if (settings.autoCopy) {
+        const firstSafeCommand = data.suggestions.find((item) => !item.blocked)?.command;
+        if (firstSafeCommand) await copyCommand(firstSafeCommand);
+      }
+
+      if (options.focusResult) {
+        window.setTimeout(() => firstResultRef.current?.focus(), 100);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -34,210 +93,212 @@ export default function Playground() {
     }
   }
 
-  async function copyCommand(command: string) {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(command);
+  function updateHistory(id: string, changes: Partial<HistoryItem>) {
+    setHistory((items) =>
+      items.map((item) => (item.id === id ? { ...item, ...changes } : item)),
+    );
+  }
 
-      setTimeout(() => {
-        setCopied("");
-      }, 1500);
+  function runHistoryItem(item: HistoryItem) {
+    setPrompt(item.prompt);
+    setPlatform(item.platform);
+    setHistoryOpen(false);
+  }
+
+  function exportHistory() {
+    const blob = new Blob([JSON.stringify(history, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "cmdpilot-history.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importHistory(file: File) {
+    try {
+      const imported = JSON.parse(await file.text()) as HistoryItem[];
+      if (!Array.isArray(imported)) throw new Error("Invalid history file");
+      setHistory(imported);
     } catch {
-      setError("Failed to copy command.");
+      setError("Could not import history JSON.");
     }
   }
 
-  return (
-    <main className="mx-auto max-w-6xl px-4 py-14 sm:px-6 lg:px-8">
-      <div className="mb-8">
-        <h1 className="text-4xl font-semibold">Playground</h1>
+  function shareCommand(command: string) {
+    const url = new URL(window.location.href);
+    url.pathname = "/playground";
+    url.searchParams.set("q", prompt);
+    url.searchParams.set("platform", platform);
+    url.searchParams.set("command", command);
+    void copyCommand(url.toString());
+  }
 
-        <p className="mt-3 max-w-2xl text-slate-400">
-          Generate command suggestions, inspect safety warnings, and choose
-          whether to execute. CmdPilot never runs a command without
-          confirmation.
-        </p>
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPrompt("");
+        setError("");
+      }
+
+      if (event.key === "Enter" && (event.target as HTMLElement).tagName === "TEXTAREA") {
+        event.preventDefault();
+        void submit({ focusResult: event.ctrlKey || event.metaKey });
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  return (
+    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold sm:text-4xl">Playground</h1>
+          <p className="mt-3 max-w-2xl text-slate-400">
+            Generate command suggestions, inspect safety warnings, and preview mocked execution before anything touches a terminal.
+          </p>
+        </div>
+        <Button variant="secondary" className="lg:hidden" onClick={() => setHistoryOpen(true)}>
+          <Menu size={18} />
+          History
+        </Button>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-        {/* LEFT PANEL */}
-        <Card>
-          <label
-            htmlFor="prompt"
-            className="text-sm font-medium text-slate-300"
-          >
-            Ask
-          </label>
+      <div className="grid gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
+        <HistorySidebar
+          history={filteredHistory}
+          query={historyQuery}
+          open={historyOpen}
+          onQueryChange={setHistoryQuery}
+          onRun={runHistoryItem}
+          onDelete={(id) => setHistory((items) => items.filter((item) => item.id !== id))}
+          onClear={() => setHistory([])}
+          onToggleFavorite={(id) => {
+            const item = history.find((entry) => entry.id === id);
+            if (item) updateHistory(id, { favorite: !item.favorite });
+          }}
+          onTogglePin={(id) => {
+            const item = history.find((entry) => entry.id === id);
+            if (item) updateHistory(id, { pinned: !item.pinned });
+          }}
+          onExport={exportHistory}
+          onImport={importHistory}
+          onClose={() => setHistoryOpen(false)}
+        />
 
-          <textarea
-            id="prompt"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            className="mt-3 min-h-32 w-full resize-none rounded-md border border-white/10 bg-black/30 p-4 text-white outline-none ring-cyan-300/40 focus:ring-2"
-          />
-
-          <div className="mt-5 grid grid-cols-3 gap-2">
-            {(["windows", "linux", "macos"] as Platform[]).map((item) => (
-              <button
-                key={item}
-                onClick={() => setPlatform(item)}
-                className={`rounded-md border px-3 py-2 text-sm capitalize transition ${
-                  platform === item
-                    ? "border-cyan-300 bg-cyan-300 text-slate-950"
-                    : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-
-          <Button
-            onClick={submit}
-            disabled={loading || prompt.trim().length < 2}
-            className="mt-6 w-full"
-          >
-            {loading && <Loader2 className="animate-spin" size={18} />}
-            Generate suggestions
-          </Button>
-
-          {error && (
-            <p className="mt-4 text-sm text-rose-300">
-              {error}
+        <div className="grid gap-6 xl:grid-cols-[0.92fr_1.08fr]">
+          <Card>
+            <label htmlFor="prompt" className="text-sm font-medium text-slate-300">
+              Ask
+            </label>
+            <textarea
+              id="prompt"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              className="mt-3 min-h-32 w-full resize-none rounded-md border border-white/10 bg-black/30 p-4 text-white outline-none ring-cyan-300/40 transition focus:ring-2"
+              aria-describedby="prompt-help"
+            />
+            <p id="prompt-help" className="mt-2 text-xs text-slate-500">
+              Press Enter to generate, Ctrl+Enter to focus results, or Esc to clear.
             </p>
-          )}
-        </Card>
 
-        {/* RIGHT PANEL */}
-        <Card>
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-semibold">
-                Suggested commands
-              </h2>
-
-              {suggestions.length > 0 && (
-                <p className="mt-1 text-sm text-slate-400">
-                  {suggestions.length} suggestion
-                  {suggestions.length > 1 ? "s" : ""}
-                </p>
-              )}
+            <div className="mt-5 grid grid-cols-3 gap-2" role="group" aria-label="Platform">
+              {platforms.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setPlatform(item)}
+                  className={`rounded-md border px-3 py-2 text-sm capitalize transition focus:outline-none focus:ring-2 focus:ring-cyan-300/50 ${
+                    platform === item
+                      ? "border-cyan-300 bg-cyan-300 text-slate-950"
+                      : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                  aria-pressed={platform === item}
+                >
+                  {item}
+                </button>
+              ))}
             </div>
 
-            <span
-              className={`rounded-md px-3 py-1 text-xs uppercase tracking-wide ${
-                suggestions.some((s) => s.blocked)
-                  ? "bg-rose-500/20 text-rose-300"
-                  : "bg-white/10 text-slate-300"
-              }`}
+            <div className="mt-5">
+              <ExamplePrompts onPick={setPrompt} />
+            </div>
+
+            <Button
+              onClick={() => void submit()}
+              disabled={loading || prompt.trim().length < 2}
+              className="mt-6 w-full"
             >
-              {suggestions.some((s) => s.blocked)
-                ? "dangerous command detected"
-                : "confirmation required"}
-            </span>
-          </div>
+              <Wand2 size={18} />
+              {loading ? "Generating..." : "Generate suggestions"}
+            </Button>
 
-          <div className="space-y-4">
-            {suggestions.length === 0 ? (
-              <div className="rounded-md border border-dashed border-white/15 p-8 text-center text-slate-400">
-                Generated commands will appear here.
+            <div className="mt-4 min-h-20">
+              {loading && <ThinkingState />}
+              {error && <p className="rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p>}
+            </div>
+          </Card>
+
+          <Card>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold">Suggested commands</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  {loading ? "Generating commands..." : `${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}`}
+                </p>
               </div>
+              <span
+                className={`rounded-md px-3 py-1 text-xs uppercase tracking-wide ${
+                  suggestions.some((item) => item.blocked)
+                    ? "bg-rose-500/20 text-rose-200"
+                    : "bg-white/10 text-slate-300"
+                }`}
+              >
+                {suggestions.some((item) => item.blocked) ? "blocked" : "confirmation required"}
+              </span>
+            </div>
+
+            {loading ? (
+              <SuggestionSkeletons />
+            ) : suggestions.length === 0 ? (
+              <EmptySuggestions onPick={setPrompt} />
             ) : (
-              suggestions.map((suggestion, index) => (
-                <div
-                  key={`${suggestion.command}-${index}`}
-                  className="rounded-lg border border-white/10 bg-black/30 p-4"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <code className="text-lg text-cyan-200">
-                      {suggestion.command}
-                    </code>
-
-                    {suggestion.blocked ? (
-                      <span className="inline-flex items-center gap-2 rounded-md bg-rose-500/20 px-3 py-1 text-sm text-rose-300">
-                        <ShieldAlert size={16} />
-                        Dangerous
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-2 rounded-md bg-emerald-400/10 px-3 py-1 text-sm text-emerald-200">
-                        <CheckCircle2 size={16} />
-                        Review required
-                      </span>
-                    )}
+              <div className="space-y-4">
+                {suggestions.map((suggestion, index) => (
+                  <div
+                    key={`${suggestion.command}-${index}`}
+                    ref={index === 0 ? firstResultRef : undefined}
+                    tabIndex={index === 0 ? -1 : undefined}
+                    className="rounded-lg outline-none focus:ring-2 focus:ring-cyan-300/50"
+                  >
+                    <CommandCard
+                      suggestion={suggestion}
+                      copied={copied === suggestion.command}
+                      favorite={currentHistory?.favorite ?? false}
+                      pinned={currentHistory?.pinned ?? false}
+                      onCopy={() => void copyCommand(suggestion.command)}
+                      onExecute={() => setPreviewCommand(suggestion.command)}
+                      onShare={() => shareCommand(suggestion.command)}
+                      onFavorite={() => currentHistory && updateHistory(currentHistory.id, { favorite: !currentHistory.favorite })}
+                      onPin={() => currentHistory && updateHistory(currentHistory.id, { pinned: !currentHistory.pinned })}
+                    />
                   </div>
-
-                  <p className="mt-3 text-sm leading-6 text-slate-400">
-                    {suggestion.explanation}
-                  </p>
-
-                  {suggestion.blocked && (
-                    <div className="mt-4 rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">
-                      ⚠ Dangerous command blocked. This command cannot be
-                      executed.
-                    </div>
-                  )}
-
-                  {suggestion.warnings.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      {suggestion.warnings.map((warning) => (
-                        <div
-                          key={warning}
-                          className="flex items-center gap-2 rounded-md bg-amber-500/10 p-3 text-sm text-amber-200"
-                        >
-                          <AlertTriangle size={16} />
-                          {warning}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <Button
-  disabled={suggestion.blocked}
-  className={`min-w-24 ${
-    suggestion.blocked
-      ? "pointer-events-none opacity-40"
-      : ""
-  }`}
-  onClick={() => {
-    copyCommand(suggestion.command);
-    alert("Command copied to clipboard!");
-  }}
->
-  Execute
-</Button>
-                    <Button
-                      variant="secondary"
-                      className="min-w-24"
-                    >
-                      No
-                    </Button>
-
-                    <Button
-                      variant="secondary"
-                      onClick={() =>
-                        copyCommand(suggestion.command)
-                      }
-                    >
-                      {copied === suggestion.command ? (
-                        <>
-                          <Check size={16} />
-                          Copied
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={16} />
-                          Copy
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </div>
-              ))
+                ))}
+              </div>
             )}
-          </div>
-        </Card>
+          </Card>
+        </div>
       </div>
+
+      <TerminalPreview
+        command={previewCommand}
+        open={previewCommand.length > 0}
+        onClose={() => setPreviewCommand("")}
+      />
     </main>
   );
 }

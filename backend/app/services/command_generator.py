@@ -8,9 +8,6 @@ from app.services.explainer import explain_command
 from app.utils.config import settings
 
 
-client = Groq(api_key=settings.groq_api_key)
-
-
 FALLBACKS: dict[Platform, dict[str, list[str]]] = {
     "windows": {
         "list": ["dir", "dir /a", "tree"],
@@ -210,8 +207,16 @@ Example:
 """
 
     try:
+        if not settings.groq_api_key:
+            return _fallback_commands(
+                prompt,
+                platform,
+                limit,
+            )
+
+        client = Groq(api_key=settings.groq_api_key)
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model=settings.groq_model,
             messages=[
                 {
                     "role": "system",
@@ -265,9 +270,7 @@ Example:
             limit,
         )
 
-    except Exception as e:
-        print("Groq Error:", e)
-
+    except Exception:
         return _fallback_commands(
             prompt,
             platform,
